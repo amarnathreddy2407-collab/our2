@@ -18,20 +18,89 @@ const run = async <T,>(s: string, m: IDBTransactionMode, f: (o: IDBObjectStore) 
   return new Promise<T>((res, rej) => { const q = f(db.transaction(s, m).objectStore(s)); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
 };
 
+const LOCAL_FALLBACK_EVENT = "our-universe:local-fallback";
+let cloudFallbackActive = false;
+
+const isMissingCloudResource = (error: unknown) => {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return message.includes("pgrst205") ||
+    (message.includes("public.entries") && message.includes("schema cache")) ||
+    message.includes("bucket not found");
+};
+
+const activateCloudFallback = () => {
+  if (cloudFallbackActive) return;
+  cloudFallbackActive = true;
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(LOCAL_FALLBACK_EVENT));
+};
+
+export const isCloudFallbackActive = () => cloudFallbackActive;
+export const subscribeToCloudFallback = (listener: () => void) => {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(LOCAL_FALLBACK_EVENT, listener);
+  if (cloudFallbackActive) listener();
+  return () => window.removeEventListener(LOCAL_FALLBACK_EVENT, listener);
+};
+
+async function readItems<T>(name: string) {
+  if (!cloudOn || cloudFallbackActive) return run<T[]>(name, "readonly", (o) => o.getAll());
+  try {
+    return await cloud.list<T>(name);
+  } catch (error) {
+    if (!isMissingCloudResource(error)) throw error;
+    activateCloudFallback();
+    return run<T[]>(name, "readonly", (o) => o.getAll());
+  }
+}
+
+async function writeItem<T extends { id: string }>(name: string, item: T) {
+  if (!cloudOn || cloudFallbackActive) return run(name, "readwrite", (o) => o.put(item));
+  try {
+    await cloud.put(name, item);
+  } catch (error) {
+    if (!isMissingCloudResource(error)) throw error;
+    activateCloudFallback();
+    await run(name, "readwrite", (o) => o.put(item));
+  }
+}
+
+async function deleteItem(name: string, id: string) {
+  if (!cloudOn || cloudFallbackActive) return run(name, "readwrite", (o) => o.delete(id));
+  try {
+    await cloud.del(name, id);
+  } catch (error) {
+    if (!isMissingCloudResource(error)) throw error;
+    activateCloudFallback();
+    await run(name, "readwrite", (o) => o.delete(id));
+  }
+}
+
 export function useStore<T extends { id: string }>(name: string) {
   const [items, setItems] = useState<T[]>([]);
   const [ready, setReady] = useState(false);
-  const load = useCallback(async () => { try { setItems(cloudOn ? await cloud.list<T>(name) : await run<T[]>(name, "readonly", (o) => o.getAll())); } catch (e) { console.error(e); } setReady(true); }, [name]);
+  const load = useCallback(async () => {
+    try { setItems(await readItems<T>(name)); }
+    catch (error) { console.error(error); }
+    setReady(true);
+  }, [name]);
   useEffect(() => {
-    load();
-    if (!cloudOn) return;
-    const off = cloud.subscribe(name, load);
-    const f = () => load();
-    window.addEventListener("focus", f);
-    return () => { off(); window.removeEventListener("focus", f); };
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
+    const refresh = () => { void load(); };
+    const initialize = async () => {
+      await load();
+      if (!cancelled && cloudOn && !cloudFallbackActive) unsubscribe = cloud.subscribe(name, refresh);
+    };
+    void initialize();
+    window.addEventListener("focus", refresh);
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+      window.removeEventListener("focus", refresh);
+    };
   }, [load, name]);
-  const save = async (i: T) => { if (cloudOn) await cloud.put(name, i); else await run(name, "readwrite", (o) => o.put(i)); await load(); };
-  const remove = async (id: string) => { if (cloudOn) await cloud.del(name, id); else await run(name, "readwrite", (o) => o.delete(id)); await load(); };
+  const save = async (item: T) => { await writeItem(name, item); await load(); };
+  const remove = async (id: string) => { await deleteItem(name, id); await load(); };
   return { items, ready, save, remove };
 }
 
@@ -95,6 +164,6 @@ export const countLocal = async () => {
 };
 export const migrateLocal = async () => {
   let n = 0;
-  for (const s of STORES) for (const i of await run<{ id: string }[]>(s, "readonly", (o) => o.getAll())) { await cloud.put(s, i); n++; }
+  for (const s of STORES) for (const i of await run<{ id: string }[]>(s, "readonly", (o) => o.getAll())) { await writeItem(s, i); n++; }
   return n;
 };
