@@ -1,17 +1,19 @@
 "use client";
 import { useEffect, useState } from "react";
-import { cloudOn, countLocal, migrateLocal } from "@/lib/store";
+import { cloudOn, countLocal, isCloudFallbackActive, migrateLocal, subscribeToCloudFallback } from "@/lib/store";
 
 export default function MigrateLocal() {
   const [n, setN] = useState(0);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  const [fallback, setFallback] = useState(isCloudFallbackActive);
+  useEffect(() => subscribeToCloudFallback(() => setFallback(true)), []);
   useEffect(() => {
-    if (!cloudOn) return;
+    if (!cloudOn || fallback) return;
     try { if (localStorage.getItem("ou-migrated")) return; } catch {}
     countLocal().then(setN).catch(() => {});
   }, []);
-  if (!cloudOn || (!n && !msg)) return null;
+  if (!cloudOn || fallback || (!n && !msg)) return null;
   return (
     <section className="glass p-5 text-center" role="status">
       {msg ? <p>{msg}</p> : (
