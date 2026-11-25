@@ -2,7 +2,10 @@
 import { useCallback, useEffect, useState } from "react";
 import * as cloud from "./cloud";
 
-export const cloudOn = !!process.env.NEXT_PUBLIC_SUPABASE_URL;
+export const cloudOn = Boolean(
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+  (process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY),
+);
 
 const open = () => new Promise<IDBDatabase>((res, rej) => {
   const r = indexedDB.open("our-universe", 4);

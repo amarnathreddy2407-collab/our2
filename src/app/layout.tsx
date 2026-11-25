@@ -1,10 +1,10 @@
 import type { Metadata, Viewport } from "next";
-import { Cormorant_Garamond, Inter, Caveat } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
-const serif = Cormorant_Garamond({ subsets: ["latin"], weight: ["400", "600"], variable: "--font-cormorant" });
-const sans = Inter({ subsets: ["latin"], variable: "--font-inter" });
-const hand = Caveat({ subsets: ["latin"], weight: ["500", "700"], variable: "--font-caveat" });
+const serif = localFont({ src: "./fonts/cormorant-garamond-latin.woff2", weight: "400 700", display: "swap", variable: "--font-cormorant" });
+const sans = localFont({ src: "./fonts/inter-latin.woff2", weight: "100 900", display: "swap", variable: "--font-inter" });
+const hand = localFont({ src: "./fonts/caveat-latin.woff2", weight: "500 700", display: "swap", variable: "--font-caveat" });
 
 export const metadata: Metadata = { title: "OUR UNIVERSE", description: "A private universe for two." };
 export const viewport: Viewport = { themeColor: "#080B1A" };

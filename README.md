@@ -17,7 +17,7 @@ Videos (up to 50 MB each) work in Memories and Scratch & Reveal; stored in this 
 
 ## Put it online with shared data (Supabase)
 1. Create a free project at supabase.com. Run `supabase/schema.sql` in the SQL Editor.
-2. Project Settings > API: copy the Project URL and the anon public key.
+2. Project Settings > API: copy the Project URL and the publishable key. The app also accepts the legacy anon public key variable.
 3. Put them in `.env.local` (see `.env.example`) and in Vercel > Settings > Environment Variables, then redeploy.
 Without these variables the site stores data in the browser only. The site is open: anyone with the link can view and edit.
 "# our" 
