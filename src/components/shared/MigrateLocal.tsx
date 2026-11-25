@@ -1,31 +1,31 @@
 "use client";
 import { useEffect, useState } from "react";
-import { cloudOn, countLocal, isCloudFallbackActive, migrateLocal, subscribeToCloudFallback } from "@/lib/store";
+import { useAdminAccess } from "@/components/admin/AdminAccess";
+import { cloudOn, countLocal, migrateLocal } from "@/lib/store";
 
 export default function MigrateLocal() {
+  const { isAdmin } = useAdminAccess();
   const [n, setN] = useState(0);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
-  const [fallback, setFallback] = useState(isCloudFallbackActive);
-  useEffect(() => subscribeToCloudFallback(() => setFallback(true)), []);
   useEffect(() => {
-    if (!cloudOn || fallback) return;
-    try { if (localStorage.getItem("ou-migrated")) return; } catch {}
-    countLocal().then(setN).catch(() => {});
-  }, []);
-  if (!cloudOn || fallback || (!n && !msg)) return null;
+    if (!cloudOn || !isAdmin) return;
+    countLocal().then(setN).catch(() => setMsg("Could not inspect saved items in this browser."));
+  }, [isAdmin]);
+  if (!cloudOn || !isAdmin || (!n && !msg)) return null;
   return (
     <section className="glass p-5 text-center" role="status">
       {msg ? <p>{msg}</p> : (
         <>
-          <p>This browser has {n} saved items that aren't online yet.</p>
+          <p>This browser has {n} older saved items that can be moved to Supabase.</p>
           <button disabled={busy} className="mt-3 rounded-full bg-gradient-to-r from-lavender to-pink px-5 py-2 font-semibold text-navy disabled:opacity-50"
             onClick={async () => {
               setBusy(true);
-              try { const c = await migrateLocal(); try { localStorage.setItem("ou-migrated", "1"); } catch {} setMsg(`Moved ${c} items online.`); }
-              catch (e) { setMsg(e instanceof Error ? e.message : "Could not move the data."); }
-              setBusy(false);
-            }}>Move them online</button>
+              setMsg("");
+              try { const count = await migrateLocal(); setN(await countLocal()); setMsg(`Moved ${count} items to Supabase.`); }
+              catch (error) { setMsg(error instanceof Error ? error.message : "Could not migrate saved items."); }
+              finally { setBusy(false); }
+            }}>{busy ? "Moving..." : "Move old items to Supabase"}</button>
         </>
       )}
     </section>

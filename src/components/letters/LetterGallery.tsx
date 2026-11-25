@@ -3,41 +3,41 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Heart, Pencil, Trash2, Plus, X, PenLine } from "lucide-react";
 import { useStore, uid, fmtDate } from "@/lib/store";
+import StoreStatus from "@/components/shared/StoreStatus";
 
 type Letter = { id: string; title: string; body: string; date: string; fav: boolean; draft: boolean };
 const LAST = "last-letter";
-const SAMPLE = `Hey Laddu... ❤️
-
-Nuvvu naa life loki vachaka chala moments special ayyayi.
-
-Manam matladukunna conversations, chinna chinna fights, silly jokes, navvukunna moments... ivanni naaku chala precious.
-
-Ee website mana memories kosam create chesanu.
-
-Mana story lo inka chala beautiful chapters rayalsi unnayi.
-
-With love,
-Nee Amarnath ❤️`;
 const today = () => new Date().toISOString().slice(0, 10);
 const paper = { backgroundImage: "repeating-linear-gradient(transparent, transparent 35px, rgba(167,139,250,.28) 36px)", lineHeight: "36px" };
 
-function Editor({ initial, onClose, onSave }: { initial: Letter | null; onClose: () => void; onSave: (l: Letter) => Promise<void> }) {
+function Editor({ initial, onClose, onSave }: { initial: Letter | null; onClose: () => void; onSave: (l: Letter) => Promise<boolean> }) {
   const [title, setTitle] = useState(initial?.title ?? "");
   const [body, setBody] = useState(initial?.body ?? "");
   const [date, setDate] = useState(initial?.date ?? today());
   const [draft, setDraft] = useState(initial?.draft ?? false);
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
   const field = "w-full rounded-lg border border-stone-300 bg-white px-3 py-2";
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal>
       <form className="max-h-[92dvh] w-full max-w-lg space-y-3 overflow-auto rounded-2xl bg-[#fbf6ea] p-6 text-stone-800"
-        onSubmit={async (e) => { e.preventDefault(); if (!body.trim()) return; await onSave({ id: initial?.id ?? uid(), title: title || "Untitled letter", body, date, fav: initial?.fav ?? false, draft }); onClose(); }}>
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (!body.trim()) return setMessage("Write the letter before saving.");
+          setBusy(true);
+          setMessage("");
+          const saved = await onSave({ id: initial?.id ?? uid(), title: title || "Untitled letter", body, date, fav: initial?.fav ?? false, draft });
+          setBusy(false);
+          if (saved) onClose(); else setMessage("Could not save the letter. Check the cloud status and retry.");
+        }}>
         <h2 className="font-serif text-3xl">{initial ? "Edit letter" : "Write a letter"}</h2>
         <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" aria-label="Title" className={field} />
         <input type="date" value={date} onChange={(e) => setDate(e.target.value)} aria-label="Date" className={field} />
         <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={9} placeholder="Hey Laddu..." aria-label="Letter" style={paper} className="w-full rounded-lg bg-white px-3 font-hand text-2xl" />
         <label className="flex items-center gap-2"><input type="checkbox" checked={draft} onChange={(e) => setDraft(e.target.checked)} /> Save as draft</label>
+        {message && <p role="status" className="text-sm text-red-700">{message}</p>}
         <div className="flex justify-end gap-3"><button type="button" onClick={onClose} className="px-4 py-2">Cancel</button>
-          <button className="rounded-full bg-purple px-5 py-2 text-white">Save letter</button></div>
+          <button disabled={busy} className="rounded-full bg-purple px-5 py-2 text-white disabled:opacity-50">{busy ? "Saving..." : "Save letter"}</button></div>
       </form>
     </div>
   );
@@ -65,47 +65,40 @@ function Reader({ l, onClose }: { l: Letter; onClose: () => void }) {
 }
 
 export default function LetterGallery() {
-  const { items, ready, save, remove } = useStore<Letter>("letters");
+  const { items, ready, error, retry, refreshing, isAdmin, save, remove } = useStore<Letter>("letters");
   const [form, setForm] = useState<Letter | "new" | null>(null);
   const [read, setRead] = useState<Letter | null>(null);
   const [last, setLast] = useState(""); const [saved, setSaved] = useState("");
 
   useEffect(() => {
-    if (!ready) return;
-    setLast(items.find((i) => i.id === LAST)?.body ?? "");
-    try {
-      if (!localStorage.getItem("ou-seeded")) {
-        localStorage.setItem("ou-seeded", "1");
-        if (!items.length) save({ id: uid(), title: "Hey Laddu", body: SAMPLE, date: "2025-11-27", fav: false, draft: false });
-      }
-    } catch {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
+    if (ready) setLast(items.find((item) => item.id === LAST)?.body ?? "");
+  }, [items, ready]);
 
   const letters = items.filter((i) => i.id !== LAST).sort((a, b) => b.date.localeCompare(a.date));
-  const saveLast = async () => { await save({ id: LAST, title: "The Last Letter", body: last, date: today(), fav: false, draft: false }); setSaved("Saved " + new Date().toLocaleTimeString()); };
+  const saveLast = async () => { const savedToCloud = await save({ id: LAST, title: "The Last Letter", body: last, date: today(), fav: false, draft: false }); setSaved(savedToCloud ? "Saved " + new Date().toLocaleTimeString() : "Could not save. Check the cloud status and retry."); };
 
   return (
     <div className="space-y-10">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-serif text-4xl">Love Letters</h1>
-        <button onClick={() => setForm("new")} className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-lavender to-pink px-5 py-2.5 font-semibold text-navy">
+        {isAdmin && <button onClick={() => setForm("new")} className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-lavender to-pink px-5 py-2.5 font-semibold text-navy">
           <Plus size={18} /> Write a letter
-        </button>
+        </button>}
       </header>
 
+      <StoreStatus loading={!ready || refreshing} error={error} onRetry={retry} />
       <section aria-labelledby="last" className="rounded-3xl bg-[#fbf6ea] p-6 text-stone-800 shadow-[0_0_40px_rgba(167,139,250,.25)]">
         <h2 id="last" className="flex items-center gap-2 font-serif text-3xl"><PenLine size={22} /> The Last Letter</h2>
         <p className="mb-3 text-sm text-stone-500">The final page of our universe. Write it in your own words, and come back to add more anytime.</p>
-        <textarea value={last} onChange={(e) => { setLast(e.target.value); setSaved(""); }} rows={10} aria-label="The last letter"
-          placeholder="Laddu..." style={paper} className="w-full rounded-lg bg-white px-4 font-hand text-2xl" />
-        <div className="mt-3 flex items-center justify-end gap-4">
+        <textarea value={last} readOnly={!isAdmin} onChange={(e) => { setLast(e.target.value); setSaved(""); }} rows={10} aria-label="The last letter"
+          placeholder="Laddu..." style={paper} className="w-full rounded-lg bg-white px-4 font-hand text-2xl read-only:cursor-default" />
+        {isAdmin && <div className="mt-3 flex items-center justify-end gap-4">
           <span role="status" className="text-sm text-stone-500">{saved}</span>
           <button onClick={saveLast} className="rounded-full bg-purple px-6 py-2.5 text-white">Save letter</button>
-        </div>
+        </div>}
       </section>
 
-      {!ready ? null : letters.length === 0 ? (
+      {!ready || error ? null : letters.length === 0 ? (
         <p className="text-center font-hand text-2xl text-white/70">No letters yet. Write the first one.</p>
       ) : (
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
@@ -117,13 +110,13 @@ export default function LetterGallery() {
                 <span className="absolute inset-x-4 bottom-3 text-left font-hand text-2xl text-stone-800">{l.title}</span>
               </button>
               <p className="mt-2 text-sm text-white/60">{fmtDate(l.date)}{l.draft && " · Draft"}</p>
-              <div className="absolute right-2 top-2 flex gap-1.5">
-                {[["Favorite", <Heart key="h" size={15} className={l.fav ? "fill-pink-500 text-pink-500" : ""} />, () => save({ ...l, fav: !l.fav })],
+              {isAdmin && <div className="absolute right-2 top-2 flex gap-1.5">
+                {[["Favorite", <Heart key="h" size={15} className={l.fav ? "fill-pink-500 text-pink-500" : ""} />, () => { void save({ ...l, fav: !l.fav }); }],
                   ["Edit", <Pencil key="p" size={15} />, () => setForm(l)],
                   ["Delete", <Trash2 key="t" size={15} />, () => confirm("Delete this letter?") && remove(l.id)]].map(([label, icon, fn]) => (
                   <button key={label as string} aria-label={label as string} onClick={fn as () => void} className="rounded-full bg-white/90 p-1.5 text-stone-700">{icon as React.ReactNode}</button>
                 ))}
-              </div>
+              </div>}
             </motion.div>
           ))}
         </div>

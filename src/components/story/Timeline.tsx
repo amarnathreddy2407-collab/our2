@@ -3,18 +3,27 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { Plus, Pencil, Trash2, MapPin } from "lucide-react";
 import { useStore, uid, fmtDate, shrink } from "@/lib/store";
+import StoreStatus from "@/components/shared/StoreStatus";
 
 type Ev = { id: string; title: string; date: string; description: string; location: string; photo: string };
 
-function EventForm({ initial, onClose, onSave }: { initial: Ev | null; onClose: () => void; onSave: (e: Ev) => Promise<void> }) {
+function EventForm({ initial, onClose, onSave }: { initial: Ev | null; onClose: () => void; onSave: (e: Ev) => Promise<boolean> }) {
   const [f, setF] = useState<Ev>(initial ?? { id: uid(), title: "", date: new Date().toISOString().slice(0, 10), description: "", location: "", photo: "" });
   const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
   const field = "w-full rounded-lg border border-stone-300 bg-white px-3 py-2";
   const set = (k: keyof Ev, v: string) => setF((p) => ({ ...p, [k]: v }));
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal>
       <form className="max-h-[92dvh] w-full max-w-md space-y-3 overflow-auto rounded-2xl bg-[#fbf6ea] p-6 text-stone-800"
-        onSubmit={async (e) => { e.preventDefault(); if (!f.title.trim()) return setMsg("Add a title."); await onSave(f); onClose(); }}>
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (!f.title.trim()) return setMsg("Add a title.");
+          setBusy(true);
+          setMsg("");
+          try { if (await onSave(f)) onClose(); else setMsg("Could not save milestone."); }
+          finally { setBusy(false); }
+        }}>
         <h2 className="font-serif text-3xl">{initial ? "Edit milestone" : "Add milestone"}</h2>
         <input value={f.title} onChange={(e) => set("title", e.target.value)} placeholder="Title" aria-label="Title" className={field} />
         <input type="date" value={f.date} onChange={(e) => set("date", e.target.value)} aria-label="Date" className={field} />
@@ -24,25 +33,26 @@ function EventForm({ initial, onClose, onSave }: { initial: Ev | null; onClose: 
           onChange={async (e) => { const file = e.target.files?.[0]; if (file) try { set("photo", await shrink(file)); } catch { setMsg("Could not read that photo."); } }} />
         {msg && <p role="status" className="text-sm text-red-700">{msg}</p>}
         <div className="flex justify-end gap-3"><button type="button" onClick={onClose} className="px-4 py-2">Cancel</button>
-          <button className="rounded-full bg-purple px-5 py-2 text-white">Save milestone</button></div>
+          <button disabled={busy} className="rounded-full bg-purple px-5 py-2 text-white disabled:opacity-50">{busy ? "Saving..." : "Save milestone"}</button></div>
       </form>
     </div>
   );
 }
 
 export default function Timeline() {
-  const { items, ready, save, remove } = useStore<Ev>("events");
+  const { items, ready, error, retry, refreshing, isAdmin, save, remove } = useStore<Ev>("events");
   const [form, setForm] = useState<Ev | "new" | null>(null);
   const list = [...items].sort((a, b) => a.date.localeCompare(b.date));
   return (
     <div>
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-serif text-4xl">Our Story</h1>
-        <button onClick={() => setForm("new")} className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-lavender to-pink px-5 py-2.5 font-semibold text-navy">
+        {isAdmin && <button onClick={() => setForm("new")} className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-lavender to-pink px-5 py-2.5 font-semibold text-navy">
           <Plus size={18} /> Add milestone
-        </button>
+        </button>}
       </header>
-      {ready && list.length === 0 && (
+      <StoreStatus loading={!ready || refreshing} error={error} onRetry={retry} />
+      {ready && !error && list.length === 0 && (
         <p className="mt-12 text-center font-hand text-2xl text-white/70">Our story starts here. Add the first milestone, like the day we met.</p>
       )}
       <ol className="relative mt-10 ml-3 space-y-8 border-l border-lavender/40">
@@ -56,10 +66,10 @@ export default function Timeline() {
                   <h2 className="font-serif text-2xl">{ev.title}</h2>
                   {ev.location && <p className="mt-1 inline-flex items-center gap-1 text-sm text-white/60"><MapPin size={13} />{ev.location}</p>}
                 </div>
-                <div className="flex gap-1.5">
+                {isAdmin && <div className="flex gap-1.5">
                   <button aria-label="Edit" onClick={() => setForm(ev)} className="rounded-full bg-white/10 p-2"><Pencil size={15} /></button>
                   <button aria-label="Delete" onClick={() => confirm("Delete this milestone?") && remove(ev.id)} className="rounded-full bg-white/10 p-2"><Trash2 size={15} /></button>
-                </div>
+                </div>}
               </div>
               {ev.photo && /* eslint-disable-next-line @next/next/no-img-element */ <img src={ev.photo} alt={ev.title} loading="lazy" className="mt-4 max-h-80 w-full rounded-xl object-cover" />}
               {ev.description && <p className="mt-4 whitespace-pre-wrap font-hand text-2xl text-pink">{ev.description}</p>}
