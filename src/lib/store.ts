@@ -1,11 +1,10 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import useSWR from "swr";
 import * as cloud from "./cloud";
+import { useAdminAccess } from "@/components/admin/AdminAccess";
 
-export const cloudOn = Boolean(
-  process.env.NEXT_PUBLIC_SUPABASE_URL &&
-  (process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY),
-);
+export const cloudOn = cloud.cloudOn;
 
 const open = () => new Promise<IDBDatabase>((res, rej) => {
   const r = indexedDB.open("our-universe", 4);
@@ -18,90 +17,59 @@ const run = async <T,>(s: string, m: IDBTransactionMode, f: (o: IDBObjectStore) 
   return new Promise<T>((res, rej) => { const q = f(db.transaction(s, m).objectStore(s)); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
 };
 
-const LOCAL_FALLBACK_EVENT = "our-universe:local-fallback";
-let cloudFallbackActive = false;
-
-const isMissingCloudResource = (error: unknown) => {
+const cloudLoadError = (error: unknown) => {
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return message.includes("pgrst205") ||
-    (message.includes("public.entries") && message.includes("schema cache")) ||
-    message.includes("bucket not found");
+  if (message.includes("pgrst205") || message.includes("schema cache")) return "Supabase content tables are not installed. Apply the included SQL migration, then retry.";
+  if (message.includes("supabase public credentials")) return "Supabase public configuration is missing.";
+  return "Could not load published content. Check the connection and retry.";
 };
-
-const activateCloudFallback = () => {
-  if (cloudFallbackActive) return;
-  cloudFallbackActive = true;
-  if (typeof window !== "undefined") window.dispatchEvent(new Event(LOCAL_FALLBACK_EVENT));
-};
-
-export const isCloudFallbackActive = () => cloudFallbackActive;
-export const subscribeToCloudFallback = (listener: () => void) => {
-  if (typeof window === "undefined") return () => {};
-  window.addEventListener(LOCAL_FALLBACK_EVENT, listener);
-  if (cloudFallbackActive) listener();
-  return () => window.removeEventListener(LOCAL_FALLBACK_EVENT, listener);
-};
-
-async function readItems<T>(name: string) {
-  if (!cloudOn || cloudFallbackActive) return run<T[]>(name, "readonly", (o) => o.getAll());
-  try {
-    return await cloud.list<T>(name);
-  } catch (error) {
-    if (!isMissingCloudResource(error)) throw error;
-    activateCloudFallback();
-    return run<T[]>(name, "readonly", (o) => o.getAll());
-  }
-}
-
-async function writeItem<T extends { id: string }>(name: string, item: T) {
-  if (!cloudOn || cloudFallbackActive) return run(name, "readwrite", (o) => o.put(item));
-  try {
-    await cloud.put(name, item);
-  } catch (error) {
-    if (!isMissingCloudResource(error)) throw error;
-    activateCloudFallback();
-    await run(name, "readwrite", (o) => o.put(item));
-  }
-}
-
-async function deleteItem(name: string, id: string) {
-  if (!cloudOn || cloudFallbackActive) return run(name, "readwrite", (o) => o.delete(id));
-  try {
-    await cloud.del(name, id);
-  } catch (error) {
-    if (!isMissingCloudResource(error)) throw error;
-    activateCloudFallback();
-    await run(name, "readwrite", (o) => o.delete(id));
-  }
-}
 
 export function useStore<T extends { id: string }>(name: string) {
-  const [items, setItems] = useState<T[]>([]);
-  const [ready, setReady] = useState(false);
-  const load = useCallback(async () => {
-    try { setItems(await readItems<T>(name)); }
-    catch (error) { console.error(error); }
-    setReady(true);
-  }, [name]);
+  const { isAdmin, lock } = useAdminAccess();
+  const [mutationError, setMutationError] = useState("");
+  const key = cloud.cloudOn ? ["our-universe", name, isAdmin] as const : null;
+  const { data, error: fetchError, isLoading, isValidating, mutate } = useSWR<T[], Error>(
+    key,
+    ([, store, admin]: readonly ["our-universe", string, boolean]) => cloud.list<T>(store, admin),
+    { revalidateOnFocus: true, shouldRetryOnError: false },
+  );
+  const error = !cloud.cloudOn ? "Supabase public configuration is missing." : fetchError ? cloudLoadError(fetchError) : mutationError;
+  const ready = !isLoading && (data !== undefined || !!fetchError || !cloud.cloudOn);
+  const retry = () => { setMutationError(""); void mutate(); };
+  const save = async (item: T) => {
+    if (!isAdmin) { setMutationError("Unlock admin tools to change published content."); return false; }
+    setMutationError("");
+    try {
+      await cloud.put(name, item);
+      await mutate();
+      return true;
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "Cloud save failed.";
+      if (message.includes("Admin access is required")) await lock();
+      setMutationError(message);
+      return false;
+    }
+  };
+  const remove = async (id: string) => {
+    if (!isAdmin) { setMutationError("Unlock admin tools to change published content."); return false; }
+    setMutationError("");
+    try {
+      await cloud.del(name, id);
+      await mutate();
+      return true;
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "Cloud delete failed.";
+      if (message.includes("Admin access is required")) await lock();
+      setMutationError(message);
+      return false;
+    }
+  };
+  const hasCloudData = data !== undefined && !fetchError;
   useEffect(() => {
-    let cancelled = false;
-    let unsubscribe: (() => void) | undefined;
-    const refresh = () => { void load(); };
-    const initialize = async () => {
-      await load();
-      if (!cancelled && cloudOn && !cloudFallbackActive) unsubscribe = cloud.subscribe(name, refresh);
-    };
-    void initialize();
-    window.addEventListener("focus", refresh);
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-      window.removeEventListener("focus", refresh);
-    };
-  }, [load, name]);
-  const save = async (item: T) => { await writeItem(name, item); await load(); };
-  const remove = async (id: string) => { await deleteItem(name, id); await load(); };
-  return { items, ready, save, remove };
+    if (!cloud.cloudOn || !hasCloudData) return;
+    return cloud.subscribe(name, () => { void mutate(); });
+  }, [hasCloudData, name, mutate]);
+  return { items: data ?? [], ready, error, retry, isAdmin, save, remove, refreshing: isValidating };
 }
 
 export const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -159,11 +127,24 @@ export function useBlobUrl(b?: Blob | string) {
 const STORES = ["memories", "letters", "events", "photos", "scratch"];
 export const countLocal = async () => {
   let n = 0;
-  for (const s of STORES) n += (await run<unknown[]>(s, "readonly", (o) => o.getAll())).length;
+  for (const store of STORES) n += (await run<unknown[]>(store, "readonly", (o) => o.getAll())).length;
   return n;
 };
+
 export const migrateLocal = async () => {
-  let n = 0;
-  for (const s of STORES) for (const i of await run<{ id: string }[]>(s, "readonly", (o) => o.getAll())) { await writeItem(s, i); n++; }
-  return n;
+  if (!cloud.cloudOn) throw new Error("Supabase is not configured.");
+  let moved = 0;
+  for (const source of STORES) {
+    const items = await run<{ id: string; [key: string]: unknown }[]>(source, "readonly", (o) => o.getAll());
+    for (const item of items) {
+      const destination = source === "photos" ? "scratch" : source;
+      const record = source === "photos"
+        ? { ...item, id: `legacy-photo-${item.id}`, caption: item.caption ?? "", at: item.at ?? moved }
+        : item;
+      await cloud.put(destination, record);
+      await run(source, "readwrite", (o) => o.delete(item.id));
+      moved++;
+    }
+  }
+  return moved;
 };

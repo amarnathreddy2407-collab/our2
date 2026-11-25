@@ -4,10 +4,11 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Heart, Pencil, Trash2, Plus, X, ChevronLeft, ChevronRight, Search, MapPin, Play } from "lucide-react";
 import { useStore, uid, fmtDate, readMedia } from "@/lib/store";
 import BlobVideo from "@/components/shared/BlobVideo";
+import StoreStatus from "@/components/shared/StoreStatus";
 
 type Memory = { id: string; photo: string; caption: string; date: string; location: string; fav: boolean; rot: number; video?: Blob | string };
 
-function Polaroid({ m, onOpen, onFav, onEdit, onDel }: { m: Memory; onOpen: () => void; onFav: () => void; onEdit: () => void; onDel: () => void }) {
+function Polaroid({ m, isAdmin, onOpen, onFav, onEdit, onDel }: { m: Memory; isAdmin: boolean; onOpen: () => void; onFav: () => void; onEdit: () => void; onDel: () => void }) {
   const ctl = "rounded-full bg-white/90 p-1.5 text-stone-700 shadow hover:text-pink-600";
   return (
     <motion.figure layout initial={{ opacity: 0, y: 20, rotate: m.rot }} animate={{ opacity: 1, y: 0, rotate: m.rot }}
@@ -18,11 +19,11 @@ function Polaroid({ m, onOpen, onFav, onEdit, onDel }: { m: Memory; onOpen: () =
         <img src={m.photo} alt={m.caption} loading="lazy" className="aspect-square w-full object-cover" />
         {m.video && <span aria-hidden className="absolute inset-0 m-auto flex h-12 w-12 items-center justify-center rounded-full bg-black/55 text-white"><Play size={22} /></span>}
       </button>
-      <div className="absolute right-4 top-4 flex gap-1.5 opacity-100 transition md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100">
+      {isAdmin && <div className="absolute right-4 top-4 flex gap-1.5 opacity-100 transition md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100">
         <button className={ctl} onClick={onFav} aria-label="Favorite"><Heart size={16} className={m.fav ? "fill-pink-500 text-pink-500" : ""} /></button>
         <button className={ctl} onClick={onEdit} aria-label="Edit"><Pencil size={16} /></button>
         <button className={ctl} onClick={onDel} aria-label="Delete"><Trash2 size={16} /></button>
-      </div>
+      </div>}
       <figcaption className="min-h-[4.5rem] px-1 pb-2 pt-3">
         <p className="font-hand text-xl leading-6 text-stone-800">{m.caption}</p>
         <p className="mt-1 flex flex-wrap items-center gap-x-2 font-sans text-xs text-stone-500">
@@ -34,7 +35,7 @@ function Polaroid({ m, onOpen, onFav, onEdit, onDel }: { m: Memory; onOpen: () =
   );
 }
 
-function MemoryForm({ initial, onClose, onSave }: { initial: Memory | null; onClose: () => void; onSave: (m: Memory) => Promise<void> }) {
+function MemoryForm({ initial, onClose, onSave }: { initial: Memory | null; onClose: () => void; onSave: (m: Memory) => Promise<boolean> }) {
   const [files, setFiles] = useState<File[]>([]);
   const [caption, setCaption] = useState(initial?.caption ?? "");
   const [date, setDate] = useState(initial?.date ?? new Date().toISOString().slice(0, 10));
@@ -44,13 +45,20 @@ function MemoryForm({ initial, onClose, onSave }: { initial: Memory | null; onCl
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (initial) { await onSave({ ...initial, caption, date, location }); return onClose(); }
+    if (initial) {
+      setBusy(true);
+      const saved = await onSave({ ...initial, caption, date, location });
+      setBusy(false);
+      if (saved) onClose(); else setMsg("Could not save this memory. Check the connection and retry.");
+      return;
+    }
     if (!files.length) return setMsg("Choose at least one photo.");
     setBusy(true);
     try {
       for (let i = 0; i < files.length; i++) {
         setMsg(`Saving ${i + 1} of ${files.length}...`);
-        await onSave({ id: uid(), ...(await readMedia(files[i])), caption, date, location, fav: false, rot: Math.round((Math.random() * 8 - 4) * 10) / 10 });
+        const saved = await onSave({ id: uid(), ...(await readMedia(files[i])), caption, date, location, fav: false, rot: Math.round((Math.random() * 8 - 4) * 10) / 10 });
+        if (!saved) throw new Error("Could not save memory. Check the connection and retry.");
       }
       onClose();
     } catch (err) { setMsg(err instanceof Error ? err.message : "Could not save. Try fewer photos."); setBusy(false); }
@@ -75,7 +83,7 @@ function MemoryForm({ initial, onClose, onSave }: { initial: Memory | null; onCl
 }
 
 export default function MemoryGallery() {
-  const { items, ready, save, remove } = useStore<Memory>("memories");
+  const { items, ready, error, retry, refreshing, isAdmin, save, remove } = useStore<Memory>("memories");
   const [q, setQ] = useState(""); const [year, setYear] = useState("all"); const [favOnly, setFavOnly] = useState(false);
   const [form, setForm] = useState<Memory | "new" | null>(null); const [view, setView] = useState<number | null>(null);
 
@@ -95,16 +103,16 @@ export default function MemoryGallery() {
     window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k);
   }, [view, list.length]);
 
-  const del = (m: Memory) => { if (confirm("Delete this memory?")) remove(m.id); };
+  const del = (m: Memory) => { if (confirm("Delete this memory?")) void remove(m.id); };
   const cur = view !== null ? list[view] : null;
 
   return (
     <section className="rounded-3xl bg-[linear-gradient(135deg,#f1e7d3,#e8dcc4)] p-4 text-stone-800 sm:p-8">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-serif text-4xl">Memories</h1>
-        <button onClick={() => setForm("new")} className="inline-flex items-center gap-2 rounded-full bg-purple px-5 py-2.5 text-white shadow">
+        {isAdmin && <button onClick={() => setForm("new")} className="inline-flex items-center gap-2 rounded-full bg-purple px-5 py-2.5 text-white shadow">
           <Plus size={18} /> Add memory
-        </button>
+        </button>}
       </div>
       <div className="mt-4 flex flex-wrap gap-3">
         <label className="relative min-w-48 flex-1">
@@ -121,19 +129,19 @@ export default function MemoryGallery() {
         </button>
       </div>
 
-      {!ready ? <p className="mt-10 text-center text-stone-500">Loading...</p>
-        : list.length === 0 ? (
+      <StoreStatus loading={!ready || refreshing} error={error} onRetry={retry} />
+      {ready && !error && (list.length === 0 ? (
           <p className="mt-12 text-center font-hand text-2xl text-stone-600">
             {items.length ? "No memories match. Try another search." : "No memories yet. Tap “Add memory” to pin your first Polaroid."}
           </p>
         ) : (
           <div className="mt-8 grid grid-cols-2 gap-5 lg:grid-cols-3 xl:grid-cols-4">
             {list.map((m, i) => (
-              <Polaroid key={m.id} m={m} onOpen={() => setView(i)} onEdit={() => setForm(m)} onDel={() => del(m)}
-                onFav={() => save({ ...m, fav: !m.fav })} />
+              <Polaroid key={m.id} m={m} isAdmin={isAdmin} onOpen={() => setView(i)} onEdit={() => setForm(m)} onDel={() => del(m)}
+                onFav={() => { void save({ ...m, fav: !m.fav }); }} />
             ))}
           </div>
-        )}
+        ))}
 
       <AnimatePresence>
         {cur && (
